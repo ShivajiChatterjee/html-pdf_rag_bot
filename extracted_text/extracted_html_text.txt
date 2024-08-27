@@ -1,0 +1,83 @@
+
+
+
+Crop Recommendation System - Your Agriculture Partner
+
+
+
+
+
+
+
+
+
+
+
+
+Agri Advisor
+
+
+
+
+
+
+
+
+Crop Recommendation System  🌱🌱   
+
+
+
+
+Nitrogen
+
+
+
+Phosphorus
+
+
+
+Potassium
+
+
+
+
+
+Temperature
+
+
+
+Humidity
+
+
+
+pH
+
+
+
+
+
+Rainfall
+
+
+
+
+
+
+              Get Recommendation
+            
+
+
+
+
+      {% if prediction %}
+      
+
+
+Recommend Crop
+{{prediction }}
+
+
+      {% endif %}
+    
+
+
