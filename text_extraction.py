@@ -6,7 +6,6 @@ import fitz  # PyMuPDF
 import io
 from PIL import Image
 import time
-import requests
 from bs4 import BeautifulSoup
 from trafilatura import fetch_url, extract
 
@@ -24,16 +23,21 @@ def timed_extract_text_from_pdf(pdf_path, image_output_dir, time_limit=DEFAULT_T
         text = page.get_text()
         all_text += f"Page {page_number + 1} Text:\n{text}\n"
 
+        # Extract images from the page
         images = page.get_images(full=True)
         if not images:
             return all_text
 
-        # Extract images from the page
+        # Process each image found on the page
         for img_index, img_info in enumerate(images):
             image_index = img_info[0]
             base_image = pdf_document.extract_image(image_index)
             image_bytes = base_image["image"]
             image = Image.open(io.BytesIO(image_bytes))
+
+            # Convert image to RGB mode if it's in CMYK
+            if image.mode == 'CMYK':
+                image = image.convert('RGB')
 
             # Save the image
             image_filename = os.path.join(image_output_dir, f'page_{page_number + 1}_image_{img_index + 1}.png')
@@ -78,7 +82,7 @@ def timed_extract_text_from_pdf(pdf_path, image_output_dir, time_limit=DEFAULT_T
 
     if not all_text.strip():  # Check if any text was extracted
         print("No text extracted from the PDF file.")
-        return None, extracted_images  # Return empty text and the images list
+        return None, extracted_images  # Return None for text and the images list
 
     output_dir = os.path.join(os.getcwd(), 'extracted_text')
     os.makedirs(output_dir, exist_ok=True)
