@@ -3,7 +3,6 @@ import logging
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, PointStruct
 from sentence_transformers import SentenceTransformer
-from nltk.tokenize import sent_tokenize
 from dotenv import load_dotenv
 
 # Load environment variables from the .env file
@@ -14,7 +13,7 @@ logging.basicConfig(level=logging.INFO)
 
 # Initialize Qdrant client with an increased timeout
 qdrant_client = QdrantClient(
-    url="https://055211ef-ed58-4ea2-8c81-2398365ff2f3.europe-west3-0.gcp.cloud.qdrant.io:6333",
+    url="https://055211ef-ed58-4ea2-8c81-2398365ff2f3.europe-west3-0.gcp.cloud.qdrant.io",
     api_key=os.getenv("QDRANT_API_KEY"),
     timeout=120  # Increased timeout (in seconds)
 )
@@ -22,36 +21,39 @@ qdrant_client = QdrantClient(
 # Define the path to the extracted text file
 extracted_text_file_path = 'extracted_text.txt'
 
-# Function to split text into semantic chunks (by sentences)
-def split_text_by_sentences(text, max_chunk_size=256):
-    sentences = sent_tokenize(text)
+# Function to split text into smaller chunks (approximately one paragraph or less, with character length limit)
+def split_text_into_smaller_chunks(text, max_chunk_length=500):
+    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]  # Split text into paragraphs and remove empty ones
     chunks = []
-    current_chunk = ""
-    for sentence in sentences:
-        if len(current_chunk) + len(sentence) <= max_chunk_size:
-            current_chunk += " " + sentence
-        else:
-            chunks.append(current_chunk.strip())
-            current_chunk = sentence
-    if current_chunk:
-        chunks.append(current_chunk.strip())
+
+    # Split each paragraph into smaller chunks if it exceeds max_chunk_length
+    for paragraph in paragraphs:
+        while len(paragraph) > max_chunk_length:
+            split_point = paragraph[:max_chunk_length].rfind(' ')  # Find the last space within the max_chunk_length
+            if split_point == -1:
+                split_point = max_chunk_length  # If no space is found, split at the max_chunk_length
+            chunks.append(paragraph[:split_point])
+            paragraph = paragraph[split_point:].strip()
+        if paragraph:
+            chunks.append(paragraph)
+
     return chunks
 
-def store_text_in_qdrant(file_path, collection_name="text_chunks", batch_size=10):
+def store_text_in_qdrant(file_path, collection_name="text_chunks2", batch_size=10):
     # Check if the file exists
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"The file {file_path} does not exist.")
 
-    # Initialize the text embedding model
-    model = SentenceTransformer('all-MiniLM-L6-v2')
+    # Initialize the improved text embedding model for better QA tasks
+    model = SentenceTransformer('multi-qa-MiniLM-L6-cos-v1')
 
     # Read text from the file
     with open(file_path, 'r', encoding='utf-8') as file:
         text = file.read()
 
-    # Split text into semantic chunks
-    chunks = split_text_by_sentences(text)
-    logging.info(f"Text split into {len(chunks)} semantic chunks")
+    # Split text into smaller chunks with a maximum length
+    chunks = split_text_into_smaller_chunks(text, max_chunk_length=500)
+    logging.info(f"Text split into {len(chunks)} smaller semantic chunks")
 
     # Generate vector embeddings for each chunk
     embeddings = model.encode(chunks)
