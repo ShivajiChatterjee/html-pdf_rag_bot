@@ -16,26 +16,23 @@ model = SentenceTransformer('multi-qa-MiniLM-L6-cos-v1')
 # Initialize Qdrant client
 qdrant_api_key = os.getenv("QDRANT_API_KEY")
 llama_api_key = os.getenv("LLAMA_API_KEY")  # Get Llama API key from environment
-qdrant_url = "https://055211ef-ed58-4ea2-8c81-2398365ff2f3.europe-west3-0.gcp.cloud.qdrant.io"
-
+qdrant_url = "https://055211ef-ed58-4ea2-8c81-2398365ff2f3.europe-west3-0.gcp.cloud.qdrant.io"  # Hardcoded Qdrant URL
+llama_api_url = os.getenv("LLAMA_API_URL")  # Get Llama API URL from environment
 
 def get_qdrant_client():
     try:
         client = QdrantClient(api_key=qdrant_api_key, url=qdrant_url)
-        client.get_collections()  # Test the connection
+        client.get_collections()  # Test the connection without printing collections
         return client
     except Exception as e:
         st.write(f"Error connecting to Qdrant: {repr(e)}")
         return None
 
-
 qdrant_client = get_qdrant_client()
-
 
 def count_tokens(text):
     # Simple approximation of token count
     return len(text.split())
-
 
 # Function to retrieve top chunks from Qdrant while considering token limits
 def retrieve_top_chunks_from_qdrant(query, collection_name="text_chunks2", top_k=10, max_context_tokens=8192,
@@ -52,29 +49,15 @@ def retrieve_top_chunks_from_qdrant(query, collection_name="text_chunks2", top_k
         )
         if search_result:
             chunks = [res.payload['text'] for res in search_result]
-
-            # Calculate how many chunks fit within the context length
-            current_token_count = 0
-            combined_chunks = []
-
-            for chunk in chunks:
-                chunk_tokens = count_tokens(chunk)
-                if current_token_count + chunk_tokens + max_response_tokens > max_context_tokens:
-                    break
-                combined_chunks.append(chunk)
-                current_token_count += chunk_tokens
-
-            return combined_chunks
+            return chunks
         else:
             return None
     except Exception as e:
         st.write(f"Error retrieving from Qdrant: {e}")
         return None
 
-
 # Function to call the Llama model API with streaming enabled
 def get_llama_response(query, context):
-    api_url = 'https://rag-llm-api.accubits.cloud/v1/chat/completions'
     headers = {
         'api-key': llama_api_key,  # Use the API key from environment variable
         'Content-Type': 'application/json'
@@ -98,7 +81,7 @@ def get_llama_response(query, context):
     # Start timing the API call
     start_time = time.time()
 
-    response = requests.post(api_url, headers=headers, data=json.dumps(payload), stream=True)
+    response = requests.post(llama_api_url, headers=headers, data=json.dumps(payload), stream=True)
 
     if response.status_code == 200:
         result = []
@@ -111,12 +94,10 @@ def get_llama_response(query, context):
 
         # End timing the API call
         end_time = time.time()
-        st.write(f"Llama API call duration: {end_time - start_time} seconds")
         return ''.join(result)
     else:
         st.write(f"Error calling the Llama API: {response.status_code} - {response.text}")
         return None
-
 
 # Streamlit app layout
 st.title("Enhanced Qdrant Retrieval with Llama Model (Streaming Enabled)")
