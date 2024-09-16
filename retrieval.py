@@ -8,7 +8,6 @@ import networkx as nx
 from pyvis.network import Network
 import requests
 import json
-import time
 import tempfile
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
@@ -22,6 +21,7 @@ qdrant_api_key = os.getenv("QDRANT_API_KEY")
 llama_api_key = os.getenv("LLAMA_API_KEY")
 qdrant_url = "https://055211ef-ed58-4ea2-8c81-2398365ff2f3.europe-west3-0.gcp.cloud.qdrant.io"
 
+
 # Initialize Qdrant client
 def get_qdrant_client():
     try:
@@ -32,7 +32,9 @@ def get_qdrant_client():
         st.write(f"Error connecting to Qdrant: {repr(e)}")
         return None
 
+
 qdrant_client = get_qdrant_client()
+
 
 # Initialize Neo4j client
 class Neo4jClient:
@@ -48,7 +50,6 @@ class Neo4jClient:
             self._driver.close()
 
     def fetch_related_data(self, query):
-        # Extract keywords from the user's query
         keywords = extract_keywords(query)
 
         # Refined Neo4j query to only retrieve relevant nodes and relationships
@@ -65,9 +66,8 @@ class Neo4jClient:
                 node1 = record['n']
                 node2 = record['m']
                 relationship = record['r']
-                # Only include nodes that match the query keywords
                 if any(keyword.lower() in node1.get('name', '').lower() for keyword in keywords) or \
-                   any(keyword.lower() in node2.get('name', '').lower() for keyword in keywords):
+                        any(keyword.lower() in node2.get('name', '').lower() for keyword in keywords):
                     for node in [node1, node2]:
                         node_id = node.id
                         name = node.get('name', 'Unknown')
@@ -76,12 +76,13 @@ class Neo4jClient:
                     edges.append((node1.id, node2.id, relationship.type))
         return nodes, edges
 
+
 def extract_keywords(text):
-    # Basic keyword extraction using NLTK
     stop_words = set(stopwords.words('english'))
     word_tokens = word_tokenize(text)
     keywords = [word for word in word_tokens if word.isalnum() and word.lower() not in stop_words]
     return keywords
+
 
 def display_graph(nodes, edges):
     try:
@@ -101,7 +102,7 @@ def display_graph(nodes, edges):
             var options = {
               "nodes": { "shape": "dot", "size": 15, "font": { "size": 14, "color": "#000000" }},
               "edges": { "arrows": { "to": { "enabled": true }}, "color": { "color": "#A9A9A9" }, "font": { "align": "middle" }},
-              "physics": { "forceAtlas2Based": { "gravitationalConstant": -50, "centralGravity": 0.01, "springLength": 100, "springConstant": 0.08, "damping": 0.4, "avoidOverlap": 1 }, "minVelocity": 0.75, "solver": "forceAtlas2Based" },
+              "physics": { "enabled": false },
               "interaction": { "hover": true, "navigationButtons": true }
             }
         """)
@@ -114,7 +115,7 @@ def display_graph(nodes, edges):
     except Exception as e:
         return f"An error occurred: {str(e)}"
 
-# Function to retrieve top chunks from Qdrant
+
 def retrieve_top_chunks_from_qdrant(query, collection_name="text_chunks2", top_k=10, max_context_tokens=8192,
                                     max_response_tokens=500):
     if qdrant_client is None:
@@ -140,8 +141,8 @@ def retrieve_top_chunks_from_qdrant(query, collection_name="text_chunks2", top_k
         st.write(f"Error retrieving from Qdrant: {e}")
         return None
 
-# Function to call the Llama model API
-def get_llama_response(query, context):
+
+def stream_llama_response(query, context):
     api_url = 'https://rag-llm-api.accubits.cloud/v1/chat/completions'
     headers = {
         'api-key': llama_api_key,
@@ -149,12 +150,12 @@ def get_llama_response(query, context):
     }
     payload = {
         "model": "meta-llama/Meta-Llama-3-8B-Instruct",
-        "max_tokens": "500",  # Increase max tokens for a longer response
-        "stream": False,
+        "max_tokens": 500,  # Limit the max tokens generated
+        "stream": True,  # Enable streaming
         "messages": [
             {
                 "role": "system",
-                "content": "You are an intelligent AI assistant. Provide a comprehensive and detailed answer using the provided document context. If the context does not contain the answer, reply with 'The answer is not found in the provided context.'"
+                "content": "You are an intelligent AI assistant. Provide a comprehensive and detailed answer using both the provided document context and related graph data."
             },
             {
                 "role": "user",
@@ -162,23 +163,36 @@ def get_llama_response(query, context):
             }
         ]
     }
-    start_time = time.time()
-    response = requests.post(api_url, headers=headers, data=json.dumps(payload))
-    end_time = time.time()
-    st.write(f"Llama API call duration: {end_time - start_time} seconds")
+
+    # Make the request to the API
+    response = requests.post(api_url, headers=headers, data=json.dumps(payload), stream=True)
+
     if response.status_code == 200:
-        try:
-            response_data = response.json()
-            result = response_data['choices'][0]['message']['content']
-            return result
-        except (KeyError, json.JSONDecodeError):
-            st.write("Error parsing the Llama API response.")
-            return None
+        text_container = st.empty()  # Initialize an empty container to hold the streamed response
+        response_text = ""  # Initialize empty string to accumulate streamed text
+
+        for chunk in response.iter_lines():
+            if chunk:
+                try:
+                    # Decode the chunk to get the generated content
+                    chunk_data = json.loads(chunk.decode('utf-8').replace('data: ', ''))
+                    content = chunk_data.get('choices', [{}])[0].get('delta', {}).get('content', '')
+
+                    if content:
+                        response_text += content  # Accumulate the generated text
+                        text_container.write(response_text)  # Update the response in real-time
+                except json.JSONDecodeError:
+                    # Handle the case where the chunk is not valid JSON (sometimes happens during streaming)
+                    continue
+
+        return response_text  # Return the final accumulated text after streaming is done
+
     else:
+        # Handle errors from the API
         st.write(f"Error calling the Llama API: {response.status_code} - {response.text}")
         return None
 
-# Streamlit app layout
+
 st.title("Full-Scale Retriever with Qdrant and Neo4j")
 
 user_query = st.text_input("Enter your question:")
@@ -188,26 +202,28 @@ if user_query:
     top_chunks = retrieve_top_chunks_from_qdrant(user_query, top_k=10)
 
     if top_chunks:
-        combined_context = "\n\n".join(top_chunks)
-        st.write("Generating response with Llama model...")
-        llama_response = get_llama_response(user_query, combined_context)
+        st.write("Querying related data from Neo4j...")
+        neo4j_client = Neo4jClient("bolt://localhost:7687", "neo4j", "shivaji123", "pdf")
+        nodes, edges = neo4j_client.fetch_related_data(user_query)
+        neo4j_client.close()
 
-        st.subheader("Textual Answer from Llama Model:")
-        if llama_response:
-            st.write(llama_response)
+        if nodes or edges:
+            html_content = display_graph(nodes, edges)
+            st.subheader("Graphical Relationship from Neo4j:")
+            st.components.v1.html(html_content, height=600)
         else:
-            st.write("No response generated.")
+            st.write("No related graph data found in Neo4j.")
+
+        combined_context = "\n\n".join(top_chunks)
+        if nodes or edges:
+            combined_context += "\n\nRelated Graph Data:\n"
+            combined_context += "\n".join([f"Node: {node['label']}" for node in nodes.values()])
+            combined_context += "\n".join(
+                [f"Relationship: {source_id} -[{rel}]-> {target_id}" for source_id, target_id, rel in edges])
+
+        st.write("Generating response with Llama model...")
+        # Stream the response in real-time
+        stream_llama_response(user_query, combined_context)
+
     else:
         st.write("No relevant chunks found in Qdrant.")
-
-    st.write("Querying related data from Neo4j...")
-    neo4j_client = Neo4jClient("bolt://localhost:7687", "neo4j", "shivaji123", "pdf")
-    nodes, edges = neo4j_client.fetch_related_data(user_query)
-    neo4j_client.close()
-
-    if nodes or edges:
-        html_content = display_graph(nodes, edges)
-        st.subheader("Graphical Relationship from Neo4j:")
-        st.components.v1.html(html_content, height=600)
-    else:
-        st.write("No related graph data found in Neo4j.")
