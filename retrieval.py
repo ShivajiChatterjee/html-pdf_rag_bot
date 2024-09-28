@@ -36,7 +36,7 @@ def get_qdrant_client():
 qdrant_client = get_qdrant_client()
 
 
-# Initialize Neo4j client
+# Neo4j Client Class
 class Neo4jClient:
     def __init__(self, uri, user, password, database=None):
         self._uri = uri
@@ -52,29 +52,47 @@ class Neo4jClient:
     def fetch_related_data(self, query):
         keywords = extract_keywords(query)
 
-        # Refined Neo4j query to only retrieve relevant nodes and relationships
+        # Modified Neo4j query to retrieve nodes and relationships dynamically
         nodes_query = """
-        MATCH (n)-[r]-(m)
-        WHERE any(keyword IN $keywords WHERE n.name CONTAINS keyword OR m.name CONTAINS keyword)
+        MATCH (n)-[r]->(m)
+        WHERE any(keyword IN $keywords WHERE toLower(n.name) CONTAINS toLower(keyword) OR toLower(m.name) CONTAINS toLower(keyword))
         RETURN n, r, m
         """
         with self._driver.session(database=self._database) as session:
             results = session.run(nodes_query, parameters={"keywords": keywords})
             nodes = {}
-            edges = []
+            edges = set()  # Use a set to prevent duplicate edges
+            highlighted_node_id = None
+
+            # Process results
             for record in results:
                 node1 = record['n']
                 node2 = record['m']
                 relationship = record['r']
-                if any(keyword.lower() in node1.get('name', '').lower() for keyword in keywords) or \
-                        any(keyword.lower() in node2.get('name', '').lower() for keyword in keywords):
-                    for node in [node1, node2]:
-                        node_id = node.id
-                        name = node.get('name', 'Unknown')
-                        if node_id not in nodes:
-                            nodes[node_id] = {'label': name, 'title': name}
-                    edges.append((node1.id, node2.id, relationship.type))
-        return nodes, edges
+
+                node1_name = node1.get('name', 'Unknown').upper()
+                node2_name = node2.get('name', 'Unknown').upper()
+
+                # Add nodes if they are not already present
+                if node1_name not in nodes:
+                    nodes[node1_name] = {'id': node1.element_id, 'label': node1_name, 'title': node1_name}
+
+                if node2_name not in nodes:
+                    nodes[node2_name] = {'id': node2.element_id, 'label': node2_name, 'title': node2_name}
+
+                # Add relationships, but avoid duplicates
+                edge = (node1_name, node2_name, relationship.type)
+                reverse_edge = (node2_name, node1_name, relationship.type)
+                if edge not in edges and reverse_edge not in edges:
+                    edges.add(edge)
+
+                # Highlight the node matching the query
+                if query.lower() in node1_name.lower():
+                    highlighted_node_id = nodes[node1_name]['id']
+                elif query.lower() in node2_name.lower():
+                    highlighted_node_id = nodes[node2_name]['id']
+
+        return nodes, list(edges), highlighted_node_id
 
 
 def extract_keywords(text):
@@ -84,34 +102,81 @@ def extract_keywords(text):
     return keywords
 
 
-def display_graph(nodes, edges):
+def display_graph(nodes, edges, highlighted_node_id):
     try:
         G = nx.DiGraph()
+
+        # Add nodes to the graph
         for node_id, node_data in nodes.items():
             G.add_node(node_id, label=node_data['label'], title=node_data['title'])
+
+        # Add edges (relationships) to the graph
         for source_id, target_id, relationship in edges:
             G.add_edge(source_id, target_id, label=relationship)
-        net = Network(notebook=False, directed=True)
+
+        # Create a Pyvis network with a larger canvas
+        net = Network(notebook=False, directed=True, height="800px", width="1000px")
         net.from_nx(G)
+
+        # Customize node and edge visuals
         for node in net.nodes:
-            node['font'] = {'color': 'black'}
+            if node['id'] == highlighted_node_id:
+                # Highlight the queried node with a larger size and unique color
+                node['color'] = 'green'  # Unique color instead of red
+                node['size'] = 30  # Make the node larger
+                node['borderWidth'] = 3  # Make the border thicker for emphasis
+            else:
+                node['font'] = {'color': 'black'}  # Default font color
+
         for edge in net.edges:
-            edge['title'] = edge['label']
-            edge['color'] = 'gray'
+            edge['title'] = edge['label']  # Show relationship type on hover
+            edge['color'] = 'gray'  # Set color for edges
+
+        # Set physics to false for a more fixed positioning of nodes
         net.set_options("""
             var options = {
-              "nodes": { "shape": "dot", "size": 15, "font": { "size": 14, "color": "#000000" }},
-              "edges": { "arrows": { "to": { "enabled": true }}, "color": { "color": "#A9A9A9" }, "font": { "align": "middle" }},
-              "physics": { "enabled": false },
-              "interaction": { "hover": true, "navigationButtons": true }
+              "nodes": {
+                "shape": "dot",
+                "size": 15,
+                "font": {
+                  "size": 14,
+                  "color": "#000000"
+                }
+              },
+              "edges": {
+                "arrows": {
+                  "to": { "enabled": true }
+                },
+                "color": {
+                  "color": "#A9A9A9"
+                },
+                "font": {
+                  "align": "middle"
+                }
+              },
+              "interaction": {
+                "hover": true,
+                "navigationButtons": true
+              },
+              "physics": {
+                "enabled": false
+              }
             }
         """)
+
+        # Save the graph as an HTML file
         html_path = tempfile.mktemp(suffix=".html")
         net.save_graph(html_path)
+
+        # Load and return HTML content
         with open(html_path, 'r') as file:
             html_content = file.read()
+
+        # Clean up temporary file
         os.remove(html_path)
+
         return html_content
+
     except Exception as e:
         return f"An error occurred: {str(e)}"
 
@@ -203,12 +268,12 @@ if user_query:
 
     if top_chunks:
         st.write("Querying related data from Neo4j...")
-        neo4j_client = Neo4jClient("bolt://localhost:7687", "neo4j", "shivaji123", "pdf")
-        nodes, edges = neo4j_client.fetch_related_data(user_query)
+        neo4j_client = Neo4jClient("bolt://localhost:7687", "neo4j", "shivaji123", "pdf2")
+        nodes, edges, highlighted_node_id = neo4j_client.fetch_related_data(user_query)
         neo4j_client.close()
 
         if nodes or edges:
-            html_content = display_graph(nodes, edges)
+            html_content = display_graph(nodes, edges, highlighted_node_id)
             st.subheader("Graphical Relationship from Neo4j:")
             st.components.v1.html(html_content, height=600)
         else:
