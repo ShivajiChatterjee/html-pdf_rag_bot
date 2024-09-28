@@ -36,6 +36,87 @@ def get_qdrant_client():
 qdrant_client = get_qdrant_client()
 
 
+# LLaMA-based function to extract continuous keywords/entities
+def get_keywords_with_llama(query):
+    api_url = 'https://rag-llm-api.accubits.cloud/v1/chat/completions'
+    headers = {
+        'api-key': llama_api_key,
+        'Content-Type': 'application/json'
+    }
+    # Update the prompt to make it generic and extract continuous entities
+    payload = {
+        "model": "meta-llama/Meta-Llama-3-8B-Instruct",
+        "max_tokens": 100,
+        "stream": False,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are an AI assistant. Extract and return only a list of entities or important keywords from the user query. Do not provide any additional information or summaries."
+            },
+            {
+                "role": "user",
+                "content": f"Query: {query}"
+            }
+        ]
+    }
+
+    # Make the request to the LLaMA API
+    response = requests.post(api_url, headers=headers, data=json.dumps(payload))
+
+    if response.status_code == 200:
+        response_json = response.json()
+        generated_keywords = response_json['choices'][0]['message']['content']
+        return generated_keywords.split(", ")  # Assuming LLaMA returns a comma-separated list of phrases
+    else:
+        st.write(f"Error: {response.status_code} - {response.text}")
+        return []
+
+
+# LLaMA-based function to extract continuous keywords/entities
+def get_keywords_with_llama(query):
+    api_url = 'https://rag-llm-api.accubits.cloud/v1/chat/completions'
+    headers = {
+        'api-key': llama_api_key,
+        'Content-Type': 'application/json'
+    }
+    # Refine the prompt to extract only the keywords/entities
+    payload = {
+        "model": "meta-llama/Meta-Llama-3-8B-Instruct",
+        "max_tokens": 100,
+        "stream": False,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are an AI assistant. Extract and return only a list of entities or important keywords from the user query. Do not provide any additional information or summaries."
+            },
+            {
+                "role": "user",
+                "content": f"Query: {query}"
+            }
+        ]
+    }
+
+    # Make the request to the LLaMA API
+    response = requests.post(api_url, headers=headers, data=json.dumps(payload))
+
+    if response.status_code == 200:
+        response_json = response.json()
+        generated_keywords = response_json['choices'][0]['message']['content']
+
+        # Clean up the output, remove extra labels, and only return the entity names
+        cleaned_keywords = []
+        for kw in generated_keywords.split('\n'):
+            if 'Entities:' in kw or '*' in kw:
+                kw = kw.replace('Entities:', '').replace('*', '').strip()
+            if kw:
+                cleaned_keywords.append(kw)
+
+        return cleaned_keywords
+    else:
+        st.write(f"Error: {response.status_code} - {response.text}")
+        return []
+
+
 # Neo4j Client Class
 class Neo4jClient:
     def __init__(self, uri, user, password, database=None):
@@ -50,16 +131,23 @@ class Neo4jClient:
             self._driver.close()
 
     def fetch_related_data(self, query):
-        keywords = extract_keywords(query)
+        # Use LLaMA to extract keywords and entities
+        keywords = get_keywords_with_llama(query)
 
-        # Modified Neo4j query to retrieve nodes and relationships dynamically
+        st.write(f"Extracted keywords by LLaMA: {keywords}")  # Debugging step to check extracted keywords
+
+        if not keywords:
+            st.write("No valid keywords extracted from the query.")
+            return {}, [], None
+
+        # Modified Neo4j query to retrieve nodes and relationships dynamically using exact matching
         nodes_query = """
         MATCH (n)-[r]->(m)
-        WHERE any(keyword IN $keywords WHERE toLower(n.name) CONTAINS toLower(keyword) OR toLower(m.name) CONTAINS toLower(keyword))
+        WHERE toLower(n.name) IN $keywords OR toLower(m.name) IN $keywords
         RETURN n, r, m
         """
         with self._driver.session(database=self._database) as session:
-            results = session.run(nodes_query, parameters={"keywords": keywords})
+            results = session.run(nodes_query, parameters={"keywords": [kw.lower() for kw in keywords]})
             nodes = {}
             edges = set()  # Use a set to prevent duplicate edges
             highlighted_node_id = None
@@ -93,14 +181,6 @@ class Neo4jClient:
                     highlighted_node_id = nodes[node2_name]['id']
 
         return nodes, list(edges), highlighted_node_id
-
-
-def extract_keywords(text):
-    stop_words = set(stopwords.words('english'))
-    word_tokens = word_tokenize(text)
-    keywords = [word for word in word_tokens if word.isalnum() and word.lower() not in stop_words]
-    return keywords
-
 
 def display_graph(nodes, edges, highlighted_node_id):
     try:
@@ -277,8 +357,7 @@ if user_query:
             st.subheader("Graphical Relationship from Neo4j:")
             st.components.v1.html(html_content, height=600)
         else:
-            st.write("No related graph data found in Neo4j.")
-
+            st.write("No related graph data found in Neo4j. Aborting LLaMA generation...")  # No graph data
         combined_context = "\n\n".join(top_chunks)
         if nodes or edges:
             combined_context += "\n\nRelated Graph Data:\n"
@@ -286,9 +365,11 @@ if user_query:
             combined_context += "\n".join(
                 [f"Relationship: {source_id} -[{rel}]-> {target_id}" for source_id, target_id, rel in edges])
 
-        st.write("Generating response with Llama model...")
-        # Stream the response in real-time
-        stream_llama_response(user_query, combined_context)
-
+        if nodes or edges:  # Only generate LLaMA response if relevant data was found
+            st.write("Generating response with Llama model...")
+            # Stream the response in real-time
+            stream_llama_response(user_query, combined_context)
+        else:
+            st.write("Skipping LLaMA response generation as no graph data was found.")
     else:
         st.write("No relevant chunks found in Qdrant.")
